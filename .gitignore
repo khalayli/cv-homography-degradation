@@ -1,0 +1,14 @@
+# data + artifacts
+data/
+datasets/
+runs/
+*.zip
+*.tar
+*.tar.gz
+
+# notebooks
+.ipynb_checkpoints/
+
+# local env
+.env
+configs/local.yaml
