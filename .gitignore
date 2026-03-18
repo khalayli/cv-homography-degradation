@@ -1,14 +1,67 @@
-# data + artifacts
+# OS / editor clutter
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local config / secrets
+.env
+.env.*
+configs/local.yaml
+
+# Data and archives (do not commit datasets)
 data/
 datasets/
-runs/
 *.zip
 *.tar
 *.tar.gz
+*.tgz
+*.7z
+*.rar
 
-# notebooks
-.ipynb_checkpoints/
+# Experiment outputs
+runs/
+results/*
+!results/README.md
+reports/figures/*.png
+reports/figures/*.jpg
+reports/figures/*.jpeg
+reports/figures/*.pdf
+reports/figures/*.svg
 
-# local env
-.env
-configs/local.yaml
+# Heavy model / cache artifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.npz
+*.npy
+cache/
+artifacts/
+
+# Colab / notebook temp files
+/content/
