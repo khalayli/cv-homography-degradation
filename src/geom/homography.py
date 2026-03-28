@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 
 
@@ -11,34 +12,22 @@ def estimate_homography(
     """
     Estimate a homography using RANSAC.
 
-    Purpose:
-    - Take matched points from two images
-    - Estimate a 3x3 homography with RANSAC
-    - Return a simple result dictionary
+    Inputs:
+    - matched_points0: Nx2 matched points from image 0
+    - matched_points1: Nx2 corresponding matched points from image 1
 
-    Expected inputs:
-    - matched_points0:
-        matched 2D points from image 0
-    - matched_points1:
-        corresponding matched 2D points from image 1
-
-    Expected return:
+    Returns:
         {
-            "success": True or False,
-            "H": estimated_3x3_homography_or_None,
-            "inlier_mask": inlier_mask_or_None,
-            "num_input_matches": integer,
-            "num_inliers": integer,
-            "reproj_threshold": reproj_threshold,
-            "confidence": confidence,
-            "max_iters": max_iters,
-            "failure_reason": None or string,
+            "success": bool,
+            "H": 3x3 homography or None,
+            "inlier_mask": Nx1 uint8 mask or None,
+            "num_input_matches": int,
+            "num_inliers": int,
+            "reproj_threshold": float,
+            "confidence": float,
+            "max_iters": int,
+            "failure_reason": None or str,
         }
-
-    Notes:
-    - Homography estimation needs at least 4 point pairs.
-    - If estimation fails, return success=False with a failure reason.
-    - Keep the result format consistent on both success and failure.
     """
 
     print("[estimate_homography] Starting homography estimation with RANSAC...")
@@ -46,28 +35,55 @@ def estimate_homography(
     print(f"[estimate_homography] confidence={confidence}")
     print(f"[estimate_homography] max_iters={max_iters}")
 
-    num_input_matches = 0
-    if matched_points0 is not None:
-        num_input_matches = len(matched_points0)
+    validation = _validate_match_inputs(matched_points0, matched_points1)
+    num_input_matches = validation["num_matches"]
 
-    print(f"[estimate_homography] num_input_matches={num_input_matches}")
+    if not validation["ok"]:
+        return _build_failure_result(
+            num_input_matches=num_input_matches,
+            reproj_threshold=reproj_threshold,
+            confidence=confidence,
+            max_iters=max_iters,
+            failure_reason=validation["reason"],
+        )
 
-    # TODO:
-    # 1. Validate inputs with _validate_match_inputs(...)
-    # 2. If fewer than 4 matches, return _build_failure_result(...)
-    # 3. Convert points into the format expected by OpenCV
-    # 4. Call cv2.findHomography(..., method=cv2.RANSAC, ...)
-    # 5. Parse returned homography and inlier mask
-    # 6. If OpenCV fails, return _build_failure_result(...)
-    # 7. If successful, return _build_success_result(...)
+    pts0 = _prepare_points_for_opencv(matched_points0)
+    pts1 = _prepare_points_for_opencv(matched_points1)
 
-    print("[estimate_homography] TODO: implement RANSAC homography estimation.")
-    return _build_failure_result(
+    try:
+        H, inlier_mask = cv2.findHomography(
+            pts0,
+            pts1,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=float(reproj_threshold),
+            maxIters=int(max_iters),
+            confidence=float(confidence),
+        )
+    except cv2.error as e:
+        return _build_failure_result(
+            num_input_matches=num_input_matches,
+            reproj_threshold=reproj_threshold,
+            confidence=confidence,
+            max_iters=max_iters,
+            failure_reason=f"OpenCV error in findHomography: {e}",
+        )
+
+    if H is None:
+        return _build_failure_result(
+            num_input_matches=num_input_matches,
+            reproj_threshold=reproj_threshold,
+            confidence=confidence,
+            max_iters=max_iters,
+            failure_reason="cv2.findHomography returned None",
+        )
+
+    return _build_success_result(
+        H=H.astype(np.float32),
+        inlier_mask=inlier_mask,
         num_input_matches=num_input_matches,
         reproj_threshold=reproj_threshold,
         confidence=confidence,
         max_iters=max_iters,
-        failure_reason="TODO: estimate_homography not implemented yet",
     )
 
 
@@ -109,116 +125,129 @@ def _build_success_result(
     print("[_build_success_result] Building success result...")
     print(f"[_build_success_result] num_input_matches={num_input_matches}")
 
-    # TODO:
-    # 1. Count inliers from inlier_mask
-    # 2. Return a result dictionary with the same keys as failure results
-    # 3. Set success=True and failure_reason=None
+    num_inliers = _count_inliers(inlier_mask)
 
-    print("[_build_success_result] TODO: implement success result creation.")
-    return {
+    result = {
         "success": True,
         "H": H,
         "inlier_mask": inlier_mask,
         "num_input_matches": int(num_input_matches),
-        "num_inliers": 0,  # TODO: replace with real inlier count
+        "num_inliers": int(num_inliers),
         "reproj_threshold": float(reproj_threshold),
         "confidence": float(confidence),
         "max_iters": int(max_iters),
         "failure_reason": None,
     }
 
+    print(f"[_build_success_result] result={result}")
+    return result
+
 
 def _validate_match_inputs(matched_points0, matched_points1):
     print("[_validate_match_inputs] Validating matched point inputs...")
 
-    # TODO:
-    # Check:
-    # - neither input is None
-    # - both have the same number of points
-    # - each point is 2D
-    # - there are at least 4 matches
-    #
-    # Expected return:
-    # {
-    #     "ok": True or False,
-    #     "reason": None or string,
-    #     "num_matches": integer,
-    # }
+    if matched_points0 is None or matched_points1 is None:
+        return {
+            "ok": False,
+            "reason": "matched_points0 or matched_points1 is None",
+            "num_matches": 0,
+        }
 
-    print("[_validate_match_inputs] TODO: implement input validation.")
+    pts0 = np.asarray(matched_points0)
+    pts1 = np.asarray(matched_points1)
+
+    if pts0.ndim != 2 or pts1.ndim != 2:
+        return {
+            "ok": False,
+            "reason": "matched points must be 2D arrays of shape [N, 2]",
+            "num_matches": 0,
+        }
+
+    if pts0.shape[1] != 2 or pts1.shape[1] != 2:
+        return {
+            "ok": False,
+            "reason": "matched points must have shape [N, 2]",
+            "num_matches": 0,
+        }
+
+    if pts0.shape[0] != pts1.shape[0]:
+        return {
+            "ok": False,
+            "reason": "matched_points0 and matched_points1 must have same number of rows",
+            "num_matches": min(len(pts0), len(pts1)),
+        }
+
+    num_matches = int(pts0.shape[0])
+
+    if num_matches < 4:
+        return {
+            "ok": False,
+            "reason": "at least 4 matches are required to estimate a homography",
+            "num_matches": num_matches,
+        }
+
     return {
-        "ok": False,
-        "reason": "TODO: _validate_match_inputs not implemented yet",
-        "num_matches": 0,
+        "ok": True,
+        "reason": None,
+        "num_matches": num_matches,
     }
 
 
 def _prepare_points_for_opencv(points):
     print("[_prepare_points_for_opencv] Preparing points for OpenCV...")
 
-    # TODO:
-    # Convert matched points into the numeric shape/type expected by OpenCV.
-    #
-    # Typical work:
-    # - convert to numpy array
-    # - cast to float32
-    # - reshape if needed
+    pts = np.asarray(points, dtype=np.float32)
 
-    print("[_prepare_points_for_opencv] TODO: implement point conversion.")
-    raise NotImplementedError("TODO: implement _prepare_points_for_opencv")
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise ValueError(f"Expected points with shape [N, 2], got {pts.shape}")
+
+    return pts.reshape(-1, 1, 2)
 
 
 def _count_inliers(inlier_mask):
     print("[_count_inliers] Counting inliers...")
 
-    # TODO:
-    # Turn the inlier mask into an integer count.
-    # Return 0 if mask is None.
+    if inlier_mask is None:
+        return 0
 
-    print("[_count_inliers] TODO: implement inlier counting.")
-    return 0
+    mask = np.asarray(inlier_mask).reshape(-1)
+    return int(np.sum(mask > 0))
 
 
 def apply_homography_to_points(points, H):
     """
-    Optional helper for later metrics/debugging.
-
-    Expected input:
-    - points: shape [N, 2]
-    - H: shape [3, 3]
-
-    Expected return:
-    - transformed points: shape [N, 2]
+    Apply homography H to Nx2 points.
     """
 
     print("[apply_homography_to_points] Applying homography to points...")
 
-    # TODO:
-    # 1. Convert points to homogeneous coordinates
-    # 2. Multiply by H
-    # 3. Convert back to 2D coordinates
-    # 4. Return transformed points
+    pts = np.asarray(points, dtype=np.float32)
+    H = np.asarray(H, dtype=np.float64)
 
-    print("[apply_homography_to_points] TODO: implement point warping.")
-    raise NotImplementedError("TODO: implement apply_homography_to_points")
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise ValueError(f"Expected points with shape [N, 2], got {pts.shape}")
+    if H.shape != (3, 3):
+        raise ValueError(f"Expected H with shape [3, 3], got {H.shape}")
+
+    warped = cv2.perspectiveTransform(pts.reshape(-1, 1, 2), H).reshape(-1, 2)
+    return warped.astype(np.float32)
 
 
 def get_image_corners(image_width, image_height):
     """
-    Optional helper for later metrics/debugging.
-
-    Suggested corner order:
-    - top-left
-    - top-right
-    - bottom-right
-    - bottom-left
+    Return 4 corners in order:
+    top-left, top-right, bottom-right, bottom-left
     """
 
     print("[get_image_corners] Building image corner coordinates...")
     print(f"[get_image_corners] image_width={image_width}, image_height={image_height}")
 
-    # TODO:
-    # Return the 4 image corners in a consistent order.
-
-    print("[get_image_corners] TODO: implement corner generation.")
-    raise NotImplementedError("TODO: implement get_image_corners")
+    return np.array(
+        [
+            [0.0, 0.0],
+            [float(image_width - 1), 0.0],
+            [float(image_width - 1), float(image_height - 1)],
+            [0.0, float(image_height - 1)],
+        ],
+        dtype=np.float32,
+    )
