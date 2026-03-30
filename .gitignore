@@ -33,7 +33,6 @@ ENV/
 configs/local.yaml
 
 # Data and archives (do not commit datasets)
-/data/
 datasets/
 *.zip
 *.tar
