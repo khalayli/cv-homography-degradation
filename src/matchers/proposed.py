@@ -51,7 +51,6 @@ class ProposedMatcher:
         self.proposed_cfg = {}
         self.primary_matcher = None
         self.fallback_matcher = None
-
         # TODO:
         # 1. Parse the method config and keep only the proposed section
         # 2. Read settings like:
@@ -64,8 +63,20 @@ class ProposedMatcher:
         # 3. Build the primary matcher
         # 4. Optionally build the fallback matcher
 
-        print("[ProposedMatcher.__init__] TODO: implement config parsing and matcher setup.")
-        raise NotImplementedError("TODO: implement ProposedMatcher.__init__")
+        self._parse_config()
+
+        try:
+            self.primary_matcher = self._build_primary_matcher()
+        except Exception as e:
+            print(f"[ProposedMatcher] Primary matcher failed to init: {e}")
+            self.primary_matcher = None
+
+        try:
+            self.fallback_matcher = self._build_fallback_matcher()
+        except Exception as e:
+            print(f"[ProposedMatcher] Fallback matcher failed to init: {e}")
+            self.fallback_matcher = None
+
 
     def _parse_config(self):
         print("[ProposedMatcher._parse_config] Parsing proposed matcher config...")
@@ -87,9 +98,13 @@ class ProposedMatcher:
         #         "min_matches_before_fallback": 30,
         #     }
         # }
+        self.proposed_cfg = self.cfg.get("proposed", {})
 
-        print("[ProposedMatcher._parse_config] TODO: implement config parsing.")
-        raise NotImplementedError("TODO: implement _parse_config")
+        self.primary_name = self.proposed_cfg.get("primary_matcher", "orb")
+        self.fallback_name = self.proposed_cfg.get("fallback_matcher", "orb")
+        self.fallback_enabled = self.proposed_cfg.get("fallback_enabled", True)
+        self.min_matches = self.proposed_cfg.get("min_matches_before_fallback", 30)
+
 
     def _build_primary_matcher(self):
         print("[ProposedMatcher._build_primary_matcher] Building primary matcher...")
@@ -100,9 +115,16 @@ class ProposedMatcher:
         # Examples:
         # - xfeat
         # - orb
+        if self.primary_name == "orb":
+            from .orb import ORBMatcher
+            return ORBMatcher(self.cfg)
 
-        print("[ProposedMatcher._build_primary_matcher] TODO: implement primary matcher creation.")
-        raise NotImplementedError("TODO: implement _build_primary_matcher")
+        elif self.primary_name == "xfeat":
+            from .xfeat import XFeatMatcher
+            return XFeatMatcher(self.cfg)
+
+        return None
+
 
     def _build_fallback_matcher(self):
         print("[ProposedMatcher._build_fallback_matcher] Building fallback matcher...")
@@ -110,9 +132,20 @@ class ProposedMatcher:
         # TODO:
         # Build and return the fallback matcher if enabled.
         # Otherwise return None.
+        if not self.fallback_enabled:
+            return None
 
-        print("[ProposedMatcher._build_fallback_matcher] TODO: implement fallback matcher creation.")
-        raise NotImplementedError("TODO: implement _build_fallback_matcher")
+        if self.fallback_name == "orb":
+            from .orb import ORBMatcher
+            return ORBMatcher(self.cfg)
+
+        elif self.fallback_name == "xfeat":
+            from .xfeat import XFeatMatcher
+            return XFeatMatcher(self.cfg)
+
+        print(f"[ProposedMatcher] Unknown fallback matcher: {self.fallback_name}")
+        return None
+
 
     def _estimate_degradation_indicators(self, image0, image1):
         print("[ProposedMatcher._estimate_degradation_indicators] Estimating degradation indicators...")
@@ -186,9 +219,14 @@ class ProposedMatcher:
 
         # TODO:
         # Call the primary matcher on the image pair and return the raw result.
+        if self.primary_matcher is None:
+            return None
 
-        print("[ProposedMatcher._run_primary] TODO: implement primary matching call.")
-        raise NotImplementedError("TODO: implement _run_primary")
+        try:
+            return self.primary_matcher.match(image0, image1)
+        except Exception as e:
+            print(f"[ProposedMatcher] Primary matcher failed during match: {e}")
+            return None
 
     def _run_fallback(self, image0, image1):
         print("[ProposedMatcher._run_fallback] Running fallback matcher...")
@@ -210,9 +248,12 @@ class ProposedMatcher:
         # - too few matches
         # - low confidence
         # - poor coverage
+        if primary_result is None:
+            return True
 
-        print("[ProposedMatcher._should_fallback] TODO: implement fallback decision.")
-        raise NotImplementedError("TODO: implement _should_fallback")
+        num_matches = primary_result.get("num_matches", 0)
+        return num_matches < self.min_matches
+
 
     def _normalize_match_result(self, raw_result, backend_used, fallback_used, geom_overrides):
         print("[ProposedMatcher._normalize_match_result] Normalizing result...")
@@ -232,9 +273,19 @@ class ProposedMatcher:
         #     "fallback_used": fallback_used,
         #     "geom_overrides": geom_overrides,
         # }
+        if raw_result is None:
+            return self._build_empty_result(backend_used, fallback_used, geom_overrides)
 
-        print("[ProposedMatcher._normalize_match_result] TODO: implement result normalization.")
-        raise NotImplementedError("TODO: implement _normalize_match_result")
+        return {
+            "matched_points0": raw_result.get("matched_points0", np.zeros((0, 2), dtype=np.float32)),
+            "matched_points1": raw_result.get("matched_points1", np.zeros((0, 2), dtype=np.float32)),
+            "num_matches": raw_result.get("num_matches", 0),
+            "scores": raw_result.get("scores"),
+            "backend_used": backend_used,
+            "fallback_used": int(fallback_used),
+            "geom_overrides": geom_overrides or {},
+        }
+
 
     def _build_empty_result(self, backend_used="none", fallback_used=0, geom_overrides=None):
         print("[ProposedMatcher._build_empty_result] Building empty result...")
@@ -274,9 +325,26 @@ class ProposedMatcher:
         # Important:
         # - Do not estimate homography here
         # - Do not compute metrics here
+        geom_overrides = {}
 
-        print("[ProposedMatcher.match] TODO: implement proposed matching pipeline.")
-        raise NotImplementedError("TODO: implement ProposedMatcher.match")
+        primary_result = self._run_primary(image0, image1)
+
+        if self.fallback_enabled and self._should_fallback(primary_result):
+            fallback_result = self._run_fallback(image0, image1)
+
+            return self._normalize_match_result(
+                fallback_result,
+                backend_used=self.fallback_name,
+                fallback_used=1,
+                geom_overrides=geom_overrides
+            )
+
+        return self._normalize_match_result(
+            primary_result,
+            backend_used=self.primary_name,
+            fallback_used=0,
+            geom_overrides=geom_overrides
+        )
 
 
 def build_proposed_matcher(cfg=None):
