@@ -65,15 +65,44 @@ def corner_transfer_errors(H_pred, H_gt, width, height):
 def mean_corner_error(H_pred, H_gt, width, height):
     print("[mean_corner_error] Computing mean corner error")
 
-    errors = corner_transfer_errors(
-        H_pred=H_pred,
-        H_gt=H_gt,
-        width=width,
-        height=height,
-    )
+    if H_pred is None:
+        print("[mean_corner_error] H_pred is None, returning inf")
+        return float("inf")
+
+    if H_gt is None:
+        print("[mean_corner_error] H_gt is None, returning inf")
+        return float("inf")
+
+    try:
+        errors = corner_transfer_errors(
+            H_pred=H_pred,
+            H_gt=H_gt,
+            width=width,
+            height=height,
+        )
+    except Exception as exc:
+        print(f"[mean_corner_error] Exception during corner transfer: {exc}")
+        print("[mean_corner_error] Returning inf")
+        return float("inf")
+
+    errors = np.asarray(errors, dtype=np.float64)
+    print(f"[mean_corner_error] raw_errors={errors}")
+
+    if errors.size == 0:
+        print("[mean_corner_error] Empty error array, returning inf")
+        return float("inf")
+
+    if not np.all(np.isfinite(errors)):
+        print("[mean_corner_error] Non-finite values found in errors, returning inf")
+        return float("inf")
 
     value = float(np.mean(errors))
     print(f"[mean_corner_error] value={value}")
+
+    if not np.isfinite(value):
+        print("[mean_corner_error] Mean error is non-finite, returning inf")
+        return float("inf")
+
     return value
 
 

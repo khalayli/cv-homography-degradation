@@ -4,6 +4,8 @@ import os
 import sys
 
 import pandas as pd
+import numpy as np
+
 
 CURRENT_FILE = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(CURRENT_FILE))
@@ -53,41 +55,50 @@ def aggregate(df):
         if col not in df.columns:
             raise ValueError(f"[aggregate] Missing required column: {col}")
 
-    numeric_cols = ["mean_corner_error", "runtime_s", "homography_success"]
     success_cols = [col for col in df.columns if col.startswith("success@")]
+    numeric_cols = ["mean_corner_error", "runtime_s", "homography_success"] + success_cols
 
     print(f"[aggregate] success_cols={success_cols}")
 
-    df = _make_numeric(df, numeric_cols + success_cols + ["severity"])
+    df = _make_numeric(df, numeric_cols + ["severity"])
 
-    agg_dict = {
-        "mean_corner_error": "mean",
-        "runtime_s": "mean",
-        "homography_success": "mean",
-    }
+    if "mean_corner_error" not in df.columns:
+        raise ValueError("[aggregate] Missing required column: mean_corner_error")
 
-    for col in success_cols:
-        agg_dict[col] = "mean"
+    print("[aggregate] Creating finite corner error helper column")
+    df["finite_corner_error"] = df["mean_corner_error"].where(
+        np.isfinite(df["mean_corner_error"]),
+        np.nan,
+    )
 
-    print(f"[aggregate] agg_dict={agg_dict}")
-
+    print("[aggregate] Grouping rows")
     grouped = (
         df.groupby(["matcher", "corruption", "severity"], dropna=False)
         .agg(
             num_pairs=("matcher", "size"),
-            **{col: (col, agg_fn) for col, agg_fn in agg_dict.items()}
+            mean_runtime_s=("runtime_s", "mean"),
+            homography_return_rate=("homography_success", "mean"),
+            mean_corner_error_finite=("finite_corner_error", "mean"),
+            median_corner_error=("finite_corner_error", "median"),
+            num_finite_corner_errors=("finite_corner_error", lambda s: int(s.notna().sum())),
         )
         .reset_index()
     )
 
-    print(f"[aggregate] Grouped shape before rename={grouped.shape}")
+    print(f"[aggregate] Base grouped shape={grouped.shape}")
 
-    grouped = grouped.rename(
-        columns={
-            "runtime_s": "mean_runtime_s",
-            "homography_success": "homography_return_rate",
-        }
-    )
+    for col in success_cols:
+        print(f"[aggregate] Aggregating success column: {col}")
+        success_summary = (
+            df.groupby(["matcher", "corruption", "severity"], dropna=False)[col]
+            .mean()
+            .reset_index(name=col)
+        )
+        grouped = grouped.merge(
+            success_summary,
+            on=["matcher", "corruption", "severity"],
+            how="left",
+        )
 
     if "success@3" in grouped.columns:
         print("[aggregate] Creating success_rate_3px from success@3")
@@ -97,30 +108,20 @@ def aggregate(df):
         print("[aggregate] Creating success_rate_5px from success@5")
         grouped["success_rate_5px"] = grouped["success@5"]
 
-    if "mean_corner_error" in grouped.columns:
-        print("[aggregate] Filling NaN mean_corner_error with inf")
-        grouped["mean_corner_error"] = grouped["mean_corner_error"].fillna(float("inf"))
-
-    if "mean_runtime_s" in grouped.columns:
-        print("[aggregate] Leaving NaN mean_runtime_s as-is")
-
-    if "homography_return_rate" in grouped.columns:
-        print("[aggregate] Filling NaN homography_return_rate with 0.0")
-        grouped["homography_return_rate"] = grouped["homography_return_rate"].fillna(0.0)
+    print("[aggregate] Filling default values")
+    grouped["homography_return_rate"] = grouped["homography_return_rate"].fillna(0.0)
 
     for col in success_cols:
         if col in grouped.columns:
-            print(f"[aggregate] Filling NaN in {col} with 0.0")
             grouped[col] = grouped[col].fillna(0.0)
 
     if "success_rate_3px" in grouped.columns:
-        print("[aggregate] Filling NaN success_rate_3px with 0.0")
         grouped["success_rate_3px"] = grouped["success_rate_3px"].fillna(0.0)
 
     if "success_rate_5px" in grouped.columns:
-        print("[aggregate] Filling NaN success_rate_5px with 0.0")
         grouped["success_rate_5px"] = grouped["success_rate_5px"].fillna(0.0)
 
+    print("[aggregate] Sorting final table")
     grouped = grouped.sort_values(
         by=["matcher", "corruption", "severity"],
         ascending=[True, True, True],
@@ -142,7 +143,15 @@ def write_csv(path, df):
 
 def dataframe_to_json_rows(df):
     print("[dataframe_to_json_rows] Converting DataFrame to JSON-safe rows")
-    rows = df.to_dict(orient="records")
+
+    safe_df = df.copy()
+
+    for col in safe_df.columns:
+        if safe_df[col].dtype.kind in {"f", "i"}:
+            print(f"[dataframe_to_json_rows] Normalizing column: {col}")
+            safe_df[col] = safe_df[col].replace([float("inf"), float("-inf")], None)
+
+    rows = safe_df.to_dict(orient="records")
 
     for row_idx, row in enumerate(rows):
         for key, value in row.items():
