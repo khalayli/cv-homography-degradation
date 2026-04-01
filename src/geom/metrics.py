@@ -110,10 +110,10 @@ def build_pair_metrics(
         f"severity={severity}, runtime_s={runtime_s}"
     )
 
-    num_matches = get_value(H_result, "num_matches", 0)
+    num_matches = get_value(H_result, "num_input_matches", 0)
     num_inliers = get_value(H_result, "num_inliers", 0)
     reproj_rmse = get_value(H_result, "reproj_rmse", None)
-    success = get_value(H_result, "success", False)
+    estimation_success = get_value(H_result, "success", False)
     H_pred = get_value(H_result, "H", None)
 
     row = {
@@ -127,7 +127,7 @@ def build_pair_metrics(
         "num_matches": int(num_matches),
         "num_inliers": int(num_inliers),
         "reproj_rmse": float(reproj_rmse) if reproj_rmse is not None else "",
-        "homography_success": int(success),
+        "homography_success": int(estimation_success),
     }
 
     if H_pred is None:

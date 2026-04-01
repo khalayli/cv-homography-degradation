@@ -85,9 +85,17 @@ def aggregate(df):
     grouped = grouped.rename(
         columns={
             "runtime_s": "mean_runtime_s",
-            "homography_success": "success_rate",
+            "homography_success": "homography_return_rate",
         }
     )
+
+    if "success@3" in grouped.columns:
+        print("[aggregate] Creating success_rate_3px from success@3")
+        grouped["success_rate_3px"] = grouped["success@3"]
+
+    if "success@5" in grouped.columns:
+        print("[aggregate] Creating success_rate_5px from success@5")
+        grouped["success_rate_5px"] = grouped["success@5"]
 
     if "mean_corner_error" in grouped.columns:
         print("[aggregate] Filling NaN mean_corner_error with inf")
@@ -96,14 +104,22 @@ def aggregate(df):
     if "mean_runtime_s" in grouped.columns:
         print("[aggregate] Leaving NaN mean_runtime_s as-is")
 
-    if "success_rate" in grouped.columns:
-        print("[aggregate] Filling NaN success_rate with 0.0")
-        grouped["success_rate"] = grouped["success_rate"].fillna(0.0)
+    if "homography_return_rate" in grouped.columns:
+        print("[aggregate] Filling NaN homography_return_rate with 0.0")
+        grouped["homography_return_rate"] = grouped["homography_return_rate"].fillna(0.0)
 
     for col in success_cols:
         if col in grouped.columns:
             print(f"[aggregate] Filling NaN in {col} with 0.0")
             grouped[col] = grouped[col].fillna(0.0)
+
+    if "success_rate_3px" in grouped.columns:
+        print("[aggregate] Filling NaN success_rate_3px with 0.0")
+        grouped["success_rate_3px"] = grouped["success_rate_3px"].fillna(0.0)
+
+    if "success_rate_5px" in grouped.columns:
+        print("[aggregate] Filling NaN success_rate_5px with 0.0")
+        grouped["success_rate_5px"] = grouped["success_rate_5px"].fillna(0.0)
 
     grouped = grouped.sort_values(
         by=["matcher", "corruption", "severity"],
