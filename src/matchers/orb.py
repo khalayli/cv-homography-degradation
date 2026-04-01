@@ -1,10 +1,10 @@
 
 import numpy as np
-
+import cv2 as cv
 
 class ORBMatcher:
     """
-    Skeleton matcher wrapper for ORB.
+    Matcher wrapper for ORB.
 
     Purpose:
     - Initialize ORB detector/descriptor
@@ -12,13 +12,6 @@ class ORBMatcher:
     - Match descriptors
     - Apply match filtering
     - Return matched keypoints in a simple project-wide format
-
-    What this file should NOT do:
-    - load HPatches dataset files
-    - apply corruptions
-    - estimate homography
-    - compute metrics
-    - save results
 
     Expected usage in the project:
         matcher = ORBMatcher(cfg)
@@ -44,161 +37,183 @@ class ORBMatcher:
         self.cfg = cfg or {}
         self.name = "orb"
 
-        self.orb_cfg = {}
-        self.matcher_cfg = {}
         self.detector = None
         self.descriptor_matcher = None
 
-        # TODO:
-        # 1. Parse ORB-related config values from self.cfg
-        #    Example fields:
-        #    - nfeatures
-        #    - scaleFactor
-        #    - nlevels
-        #    - fastThreshold
-        #    - ratio_test
-        #
-        # 2. Build the ORB detector/descriptor object
-        #
-        # 3. Build the descriptor matcher object
-        #
-        # 4. Store any settings needed later in match(...)
+        # Safety sanity check
+        if not self.cfg:
+            raise ValueError("WARNING! ORB: Config is empty")
 
-        print("[ORBMatcher.__init__] TODO: implement config parsing and ORB setup.")
-        raise NotImplementedError("TODO: implement ORBMatcher.__init__")
 
-    def _parse_config(self):
-        print("[ORBMatcher._parse_config] Parsing ORB config...")
+        # Parse ORB-related config
+        nfeatures, scale_factor, nlevels, fast_threshold, ratio_test = (
+            self.cfg["orb"]["nfeatures"],
+            self.cfg["orb"]["scaleFactor"],
+            self.cfg["orb"]["nlevels"],
+            self.cfg["orb"]["fastThreshold"],
+            self.cfg["orb"]["ratio_test"],
+        )
 
-        # TODO:
-        # Read config values from self.cfg.
-        #
-        # Suggested expected config shape:
-        # {
-        #     "name": "orb",
-        #     "orb": {
-        #         "nfeatures": 2000,
-        #         "scaleFactor": 1.2,
-        #         "nlevels": 8,
-        #         "fastThreshold": 20,
-        #         "ratio_test": 0.75,
-        #     }
-        # }
-        #
-        # Expected result:
-        # - store a clean ORB config dict on self.orb_cfg
-        # - store matching/filtering settings on self.matcher_cfg
+        print("[ORBMatcher.__init__] nfeatures =", nfeatures)
+        print("[ORBMatcher.__init__] scale_factor =", scale_factor)
+        print("[ORBMatcher.__init__] nlevels =", nlevels)
+        print("[ORBMatcher.__init__] fast_threshold =", fast_threshold)
+        print("[ORBMatcher.__init__] ratio_test =", ratio_test)
 
-        print("[ORBMatcher._parse_config] TODO: implement config parsing.")
-        raise NotImplementedError("TODO: implement _parse_config")
+        # Build the ORB detector/descriptor object
+        self.detector = cv.ORB_create(
+            nfeatures=nfeatures,
+            scaleFactor=scale_factor,
+            nlevels=nlevels,
+            fastThreshold=fast_threshold,
+        )
+        # Build the descriptor matcher object (cc False for ratio test)
+        self.descriptor_matcher = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=False)
 
-    def _build_detector(self):
-        print("[ORBMatcher._build_detector] Building ORB detector...")
+        # Store settings needed later in match(...)
+        self.ratio_test = ratio_test
 
-        # TODO:
-        # Create and return the ORB detector/descriptor object.
-        #
-        # Typical later work:
-        # - import cv2
-        # - call cv2.ORB_create(...)
-        #
-        # Expected return:
-        #   ORB detector object
-
-        print("[ORBMatcher._build_detector] TODO: implement ORB detector creation.")
-        raise NotImplementedError("TODO: implement _build_detector")
-
-    def _build_descriptor_matcher(self):
-        print("[ORBMatcher._build_descriptor_matcher] Building descriptor matcher...")
-
-        # TODO:
-        # Create and return the descriptor matcher used for ORB descriptors.
-        #
-        # Typical later work:
-        # - use a brute-force matcher
-        # - use Hamming distance for binary descriptors
-        #
-        # Expected return:
-        #   descriptor matcher object
-
-        print("[ORBMatcher._build_descriptor_matcher] TODO: implement descriptor matcher creation.")
-        raise NotImplementedError("TODO: implement _build_descriptor_matcher")
+        print("[ORBMatcher.__init__] Done.")
+        return
 
     def _preprocess_image(self, image):
         print("[ORBMatcher._preprocess_image] Preprocessing image...")
         print(f"[ORBMatcher._preprocess_image] image_shape={getattr(image, 'shape', None)}")
 
-        # TODO:
-        # Convert the image into the format expected by ORB.
-        #
-        # Typical later work:
-        # - ensure numpy array
-        # - ensure uint8
-        # - convert color image to grayscale if needed
-        #
-        # Expected return:
-        #   preprocessed image ready for ORB
+        # image format: (H,W,3), BGR, uint8.
+        # orb format: (H,W), gray, uint8.
 
-        print("[ORBMatcher._preprocess_image] TODO: implement image preprocessing.")
-        raise NotImplementedError("TODO: implement _preprocess_image")
+        # sanity type check
+        if not isinstance(image, np.ndarray):
+            raise ValueError("Image is not numpy array")
+
+        # convert dtype if needed
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+
+        # BGR image
+        if image.ndim == 3 and image.shape[2] == 3:
+            output_image = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+
+        # already grayscale
+        elif image.ndim == 2:
+            output_image = image
+
+        else:
+            raise ValueError(f"Unsupported image shape: {image.shape}")
+
+        return output_image
 
     def _detect_and_describe(self, image):
         print("[ORBMatcher._detect_and_describe] Detecting keypoints and computing descriptors...")
         print(f"[ORBMatcher._detect_and_describe] image_shape={getattr(image, 'shape', None)}")
 
-        # TODO:
+
         # Run the ORB detector/descriptor on one image.
-        #
-        # Expected return example:
+
+        # find the keypoints and descriptors with ORB
+        kp, des = self.detector.detectAndCompute(image, None)
+        num_keypoints = len(kp)
+
+
+        # Helpful for debugging config
+
+        if num_keypoints == 0:
+            print("[ORBMatcher._detect_and_describe] No keypoints found ")
+
+        if des is None:
+            print("[ORBMatcher._detect_and_describe] Descriptors are None")
+
+        return {
+            "keypoints": kp,
+            "descriptors": des,
+            "num_keypoints": num_keypoints,
+        }
+
+        # Expected return:
         # {
         #     "keypoints": <list of cv2 keypoints>,
         #     "descriptors": <descriptor array or None>,
         #     "num_keypoints": <int>,
         # }
-        #
-        # Important:
-        # - handle the case where no keypoints are found
-        # - handle the case where descriptors are None
 
-        print("[ORBMatcher._detect_and_describe] TODO: implement detect+describe.")
-        raise NotImplementedError("TODO: implement _detect_and_describe")
 
     def _match_descriptors(self, desc0, desc1):
         print("[ORBMatcher._match_descriptors] Matching descriptors...")
 
-        # TODO:
+        # Early return on empty
+        if desc0 is None or desc1 is None:
+            print("[ORBMatcher._match_descriptors] One or both descriptors are None")
+            return []
+
+        if len(desc0) == 0 or len(desc1) == 0:
+            print("[ORBMatcher._match_descriptors] One or both descriptors are empty")
+            return []
+
         # Match descriptors between the two images.
-        #
-        # Typical later work:
-        # - use knnMatch or match
-        # - keep raw matches before filtering
-        #
+        matches = self.descriptor_matcher.knnMatch(desc0, desc1, k=2)
+
+        # Apply ratio test
+        good_matches = []
+        for pair in matches:
+            if len(pair) < 2:
+                continue
+
+            m, n = pair
+            if m.distance < self.ratio_test * n.distance:
+                good_matches.append(m)
+
+        # config improvement debug
+        print("[ORBMatcher._match_descriptors] good_matches =", len(good_matches))
+
+        return good_matches
+
         # Expected return:
         #   raw match objects from the matcher
 
-        print("[ORBMatcher._match_descriptors] TODO: implement descriptor matching.")
-        raise NotImplementedError("TODO: implement _match_descriptors")
-
-    def _filter_matches(self, raw_matches):
-        print("[ORBMatcher._filter_matches] Filtering raw matches...")
-
-        # TODO:
-        # Apply match filtering such as:
-        # - Lowe ratio test
-        # - optional distance filtering
-        #
-        # Expected return:
-        #   filtered match list
-
-        print("[ORBMatcher._filter_matches] TODO: implement match filtering.")
-        raise NotImplementedError("TODO: implement _filter_matches")
 
     def _extract_matched_points(self, keypoints0, keypoints1, filtered_matches):
         print("[ORBMatcher._extract_matched_points] Extracting matched point coordinates...")
 
-        # TODO:
         # Convert filtered match objects + keypoints into plain Nx2 arrays.
-        #
+
+        # Case 1 : Empty/0
+        if filtered_matches is None or len(filtered_matches) == 0:
+            print("[ORBMatcher._extract_matched_points] filtered_matches is None/0")
+            return {
+                "matched_points0": np.empty((0, 2), dtype=np.float32),
+                "matched_points1": np.empty((0, 2), dtype=np.float32),
+                "num_matches": 0,
+                "scores": None,
+            }
+
+        # Case 2: Matches
+        # matched_points0 contains (x,y) for every match in image 0
+        # They are corresponding
+
+        matched_points0 = np.array(
+            [keypoints0[m.queryIdx].pt for m in filtered_matches],
+            dtype=np.float32
+        )
+        matched_points1 = np.array(
+            [keypoints1[m.trainIdx].pt for m in filtered_matches],
+            dtype=np.float32
+        )
+
+        num_matches = len(filtered_matches)
+
+        print("[ORBMatcher._extract_matched_points] num_matches =", num_matches)
+        #print("[ORBMatcher._extract_matched_points] matched_points0_shape =",matched_points0.shape)
+        #print("[ORBMatcher._extract_matched_points] matched_points1_shape =",matched_points1.shape)
+
+        return {
+            "matched_points0": matched_points0,
+            "matched_points1": matched_points1,
+            "num_matches": num_matches,
+            "scores": None,
+        }
+
+
         # Expected return:
         # {
         #     "matched_points0": <Nx2 float array>,
@@ -207,54 +222,51 @@ class ORBMatcher:
         #     "scores": <optional scores or None>,
         # }
 
-        print("[ORBMatcher._extract_matched_points] TODO: implement matched point extraction.")
-        raise NotImplementedError("TODO: implement _extract_matched_points")
-
-    def _build_empty_result(self):
-        print("[ORBMatcher._build_empty_result] Building empty result...")
-
-        result = {
-            "matched_points0": np.zeros((0, 2), dtype=np.float32),
-            "matched_points1": np.zeros((0, 2), dtype=np.float32),
-            "num_matches": 0,
-            "scores": None,
-        }
-
-        print(f"[ORBMatcher._build_empty_result] result={result}")
-        return result
-
     def match(self, image0, image1):
         print("[ORBMatcher.match] Matching image pair...")
         print(f"[ORBMatcher.match] image0_shape={getattr(image0, 'shape', None)}")
         print(f"[ORBMatcher.match] image1_shape={getattr(image1, 'shape', None)}")
 
-        # TODO:
-        # 1. Validate input images
-        # 2. Preprocess image0
-        # 3. Preprocess image1
-        # 4. Detect and describe image0
-        # 5. Detect and describe image1
-        # 6. If descriptors are missing, return _build_empty_result()
-        # 7. Match descriptors
-        # 8. Filter matches
-        # 9. Convert filtered matches into matched point arrays
-        # 10. Return the final project-wide match dictionary
-        #
-        # Important:
-        # - Do not estimate homography here
-        # - Do not compute metrics here
-        # - Keep output format consistent with other matchers
+        # Validate input images
+        if image0 is None or image1 is None:
+            raise ValueError("One or both input images are None")
 
-        print("[ORBMatcher.match] TODO: implement ORB matching pipeline.")
-        raise NotImplementedError("TODO: implement ORBMatcher.match")
+        if not isinstance(image0, np.ndarray) or not isinstance(image1, np.ndarray):
+            raise ValueError("One or both input images are not numpy arrays")
+
+        if image0.size == 0 or image1.size == 0:
+            raise ValueError("One or both input images are empty")
+
+        # Preprocess image0 + image1
+        image0 = self._preprocess_image(image0)
+        image1 = self._preprocess_image(image1)
+
+        # Detect and describe image0 and image1
+        feat0 = self._detect_and_describe(image0)
+        feat1 = self._detect_and_describe(image1)
+
+        # Match descriptors + filter
+        filtered_matches = self._match_descriptors(feat0["descriptors"], feat1["descriptors"])
+
+        # Convert filtered matches into matched point arrays
+        result = self._extract_matched_points(
+            feat0["keypoints"],
+            feat1["keypoints"],
+            filtered_matches,
+        )
+        # Return the final project-wide match dictionary
+        return result
+        # Keep output format consistent with other matchers
+
 
 
 def build_orb_matcher(cfg=None):
+    #Creates and returns a configured ORBMatcher instance.
+
     print("[build_orb_matcher] Building ORB matcher...")
     print(f"[build_orb_matcher] cfg={cfg}")
 
-    # TODO:
-    # Optional helper constructor if your matcher factory wants to call this.
+    matcher = ORBMatcher(cfg)
 
-    print("[build_orb_matcher] TODO: implement helper constructor.")
-    raise NotImplementedError("TODO: implement build_orb_matcher")
+    print("[build_orb_matcher] ORB matcher built successfully")
+    return matcher
