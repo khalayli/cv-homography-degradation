@@ -57,15 +57,5 @@ cv-homography-degradation/
 - RoMa integration details  (optional)
 - Proposed degradation-aware fallback logic
 
-## Setup
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
 ## Example run
-```bash
-python scripts/run_experiment.py --config configs/default.yaml --limit-pairs 10
-python scripts/summarize_results.py --input results/dev_run/metrics.csv
-```
+Use the notebook provided.
