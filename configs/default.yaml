@@ -24,7 +24,7 @@ corruptions:
   severities: [0, 1, 2, 3, 4]
 
 method:
-  name: "xfeat" # orb / xfeat / proposed
+  name: "proposed" # orb / xfeat / proposed
 
   orb:
     nfeatures: 2000
