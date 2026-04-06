@@ -24,7 +24,7 @@ corruptions:
   severities: [0, 1, 2, 3, 4]
 
 method:
-  name: "proposed" # orb / xfeat / proposed
+  name: "xfeat" # orb / xfeat / proposed
 
   orb:
     nfeatures: 2000
@@ -36,6 +36,8 @@ method:
   xfeat:
     device: "cpu"
     top_k: 2000
+    weights_path: null
+    score_threshold: null
 
   proposed:
     enabled: true
