@@ -35,7 +35,7 @@ method:
 
   xfeat:
     device: "cpu"
-    top_k: 2048
+    top_k: 1024
     weights_path: null
     score_threshold: null
 
@@ -66,6 +66,18 @@ method:
     reproj_threshold_nominal: 3.0
     reproj_threshold_hard: 4.0
     reproj_threshold_very_hard: 5.0
+
+    probe_reproj_threshold: 3.0
+    probe_confidence: 0.995
+    probe_max_iters: 2000
+
+    probe_min_inliers: 40
+    probe_min_inlier_ratio: 0.50
+    probe_min_inlier_coverage: 0.04
+
+    probe_min_area_ratio: 0.20
+    probe_max_area_ratio: 4.00
+    probe_margin_ratio: 0.25
 
 geom:
   reproj_threshold: 3.0

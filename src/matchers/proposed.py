@@ -86,6 +86,82 @@ class ProposedMatcher:
         self.reproj_threshold_hard = float(self.proposed_cfg.get("reproj_threshold_hard", 5.0))
         self.reproj_threshold_very_hard = float(self.proposed_cfg.get("reproj_threshold_very_hard", 6.0))
 
+        #  # --- Probe-based fallback sanity checks ---
+        # Before accepting the primary XFeat result, run a cheap homography probe.
+        # If the probe looks geometrically weak or implausible, allow fallback to ORB.
+
+        # Reprojection threshold used by the cheap probe homography.
+        # Smaller values make the probe stricter; larger values tolerate more geometric error.
+        self.probe_reproj_threshold = float(
+            self.proposed_cfg.get("probe_reproj_threshold", 3.0)
+        )
+
+        # RANSAC confidence for the probe homography.
+        # Higher values try harder to find a stable model but may cost a bit more time.
+        self.probe_confidence = float(
+            self.proposed_cfg.get("probe_confidence", 0.995)
+        )
+
+        # Maximum RANSAC iterations for the probe homography.
+        # Keeps the probe inexpensive while still giving it enough chances to fit a model.
+        self.probe_max_iters = int(
+            self.proposed_cfg.get("probe_max_iters", 2000)
+        )
+
+        # Minimum absolute number of probe inliers required to trust the primary result.
+        # Rejects homographies supported by too few geometrically consistent matches.
+        self.probe_min_inliers = int(
+            self.proposed_cfg.get("probe_min_inliers", 40)
+        )
+
+        # Minimum fraction of matches that must survive probe RANSAC as inliers.
+        # Low values suggest the primary match set contains too many unstable or incorrect matches.
+        self.probe_min_inlier_ratio = float(
+            self.proposed_cfg.get("probe_min_inlier_ratio", 0.50)
+        )
+
+        # Minimum spatial coverage of the probe inliers over the image.
+        # Rejects cases where inliers are concentrated in a tiny local cluster.
+        self.probe_min_inlier_coverage = float(
+            self.proposed_cfg.get("probe_min_inlier_coverage", 0.04)
+        )
+
+        # Minimum allowed warped quadrilateral area ratio relative to the source image.
+        # Rejects collapsed or unrealistically small homographies.
+        self.probe_min_area_ratio = float(
+            self.proposed_cfg.get("probe_min_area_ratio", 0.20)
+        )
+
+        # Maximum allowed warped quadrilateral area ratio relative to the source image.
+        # Rejects exploded or unrealistically large homographies.
+        self.probe_max_area_ratio = float(
+            self.proposed_cfg.get("probe_max_area_ratio", 4.00)
+        )
+
+        # Extra boundary margin when checking whether warped corners remain reasonable.
+        # Allows some slack outside the image so valid near-border warps are not rejected too aggressively.
+        self.probe_margin_ratio = float(
+            self.proposed_cfg.get("probe_margin_ratio", 0.25)
+        )
+
+        print(
+            "[ProposedMatcher._parse_config] "
+            f"probe_reproj_threshold={self.probe_reproj_threshold}, "
+            f"probe_confidence={self.probe_confidence}, "
+            f"probe_max_iters={self.probe_max_iters}"
+        )
+        print(
+            "[ProposedMatcher._parse_config] "
+            f"probe_min_inliers={self.probe_min_inliers}, "
+            f"probe_min_inlier_ratio={self.probe_min_inlier_ratio}, "
+            f"probe_min_inlier_coverage={self.probe_min_inlier_coverage}"
+        )
+        print(
+            "[ProposedMatcher._parse_config] "
+            f"probe_min_area_ratio={self.probe_min_area_ratio}, "
+            f"probe_max_area_ratio={self.probe_max_area_ratio}, "
+            f"probe_margin_ratio={self.probe_margin_ratio}"
+        )
         print(f"[ProposedMatcher._parse_config] primary={self.primary_name}, fallback={self.fallback_name}")
         print(f"[ProposedMatcher._parse_config] fallback_enabled={self.fallback_enabled}")
         print(f"[ProposedMatcher._parse_config] min_matches={self.min_matches}")
@@ -439,9 +515,149 @@ class ProposedMatcher:
         print(f"[ProposedMatcher._compute_match_quality] quality={quality}")
         return quality
 
- #now fallback triggers on:
+    # Compute the area of a 2D polygon using the shoelace formula.
+    # Used to measure the size of the warped image quadrilateral for homography sanity checks.
+    def _polygon_area(self, pts):
+        print("[ProposedMatcher._polygon_area] Computing polygon area...")
 
- #too few matches, matches too spatially clustered, very low average confidence when scores exist
+        pts = np.asarray(pts, dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[0] < 3 or pts.shape[1] != 2:
+            print("[ProposedMatcher._polygon_area] Invalid polygon shape. Returning 0.0")
+            return 0.0
+
+        x = pts[:, 0]
+        y = pts[:, 1]
+        area = 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+        area = float(area)
+
+        print(f"[ProposedMatcher._polygon_area] area={area}")
+        return area
+
+    def _probe_primary_geometry(self, match_result, image0_shape, image1_shape):
+        print("[ProposedMatcher._probe_primary_geometry] Probing primary geometry...")
+
+        pts0 = self._normalize_points(match_result.get("matched_points0"))
+        pts1 = self._normalize_points(match_result.get("matched_points1"))
+
+        n = int(min(len(pts0), len(pts1)))
+        pts0 = pts0[:n]
+        pts1 = pts1[:n]
+
+        probe = {
+            "success": False,
+            "num_inliers": 0,
+            "inlier_ratio": 0.0,
+            "inlier_coverage0": 0.0,
+            "inlier_coverage1": 0.0,
+            "inlier_coverage": 0.0,
+            "area_ratio": None,
+            "corners_reasonable": False,
+        }
+
+        print(f"[ProposedMatcher._probe_primary_geometry] n={n}")
+
+        if n < 4:
+            print("[ProposedMatcher._probe_primary_geometry] Fewer than 4 matches. Probe failed.")
+            return probe
+
+        try:
+            H, inlier_mask = cv.findHomography(
+                pts0.reshape(-1, 1, 2),
+                pts1.reshape(-1, 1, 2),
+                method=cv.RANSAC,
+                ransacReprojThreshold=float(self.probe_reproj_threshold),
+                maxIters=int(self.probe_max_iters),
+                confidence=float(self.probe_confidence),
+            )
+        except cv.error as exc:
+            print(f"[ProposedMatcher._probe_primary_geometry] findHomography failed: {exc}")
+            return probe
+
+        if H is None or inlier_mask is None:
+            print("[ProposedMatcher._probe_primary_geometry] H or inlier_mask is None.")
+            return probe
+
+        mask = np.asarray(inlier_mask).reshape(-1).astype(bool)
+        num_inliers = int(np.sum(mask))
+        inlier_ratio = float(num_inliers / max(n, 1))
+
+        inlier_pts0 = pts0[mask] if num_inliers > 0 else np.zeros((0, 2), dtype=np.float32)
+        inlier_pts1 = pts1[mask] if num_inliers > 0 else np.zeros((0, 2), dtype=np.float32)
+
+        inlier_coverage0 = self._compute_bbox_coverage(inlier_pts0, image0_shape) if num_inliers >= 4 else 0.0
+        inlier_coverage1 = self._compute_bbox_coverage(inlier_pts1, image1_shape) if num_inliers >= 4 else 0.0
+        inlier_coverage = float(min(inlier_coverage0, inlier_coverage1))
+
+        h0, w0 = int(image0_shape[0]), int(image0_shape[1])
+        h1, w1 = int(image1_shape[0]), int(image1_shape[1])
+
+        corners0 = np.array(
+            [
+                [0.0, 0.0],
+                [float(w0 - 1), 0.0],
+                [float(w0 - 1), float(h0 - 1)],
+                [0.0, float(h0 - 1)],
+            ],
+            dtype=np.float32,
+        ).reshape(-1, 1, 2)
+
+        area_ratio = None
+        corners_reasonable = False
+
+        try:
+            warped_corners = cv.perspectiveTransform(corners0, H).reshape(-1, 2)
+
+            finite_ok = bool(np.all(np.isfinite(warped_corners)))
+
+            src_area = float(max(w0 * h0, 1))
+            dst_area = self._polygon_area(warped_corners)
+            area_ratio = float(dst_area / src_area)
+
+            margin_x = float(self.probe_margin_ratio * w1)
+            margin_y = float(self.probe_margin_ratio * h1)
+
+            xs = warped_corners[:, 0]
+            ys = warped_corners[:, 1]
+
+            inside_loose_bounds = bool(
+                np.all(xs > -margin_x)
+                and np.all(xs < (w1 - 1 + margin_x))
+                and np.all(ys > -margin_y)
+                and np.all(ys < (h1 - 1 + margin_y))
+            )
+
+            corners_reasonable = bool(
+                finite_ok
+                and inside_loose_bounds
+                and (self.probe_min_area_ratio <= area_ratio <= self.probe_max_area_ratio)
+            )
+
+            print(
+                "[ProposedMatcher._probe_primary_geometry] "
+                f"warped_corners={warped_corners.tolist()}, "
+                f"area_ratio={area_ratio}, corners_reasonable={corners_reasonable}"
+            )
+
+        except cv.error as exc:
+            print(f"[ProposedMatcher._probe_primary_geometry] perspectiveTransform failed: {exc}")
+
+        probe = {
+            "success": True,
+            "num_inliers": int(num_inliers),
+            "inlier_ratio": float(inlier_ratio),
+            "inlier_coverage0": float(inlier_coverage0),
+            "inlier_coverage1": float(inlier_coverage1),
+            "inlier_coverage": float(inlier_coverage),
+            "area_ratio": area_ratio,
+            "corners_reasonable": bool(corners_reasonable),
+        }
+
+        print(f"[ProposedMatcher._probe_primary_geometry] probe={probe}")
+        return probe
+
+    # Fall back when the primary result looks weak either before geometry
+    # (few matches / poor coverage / low confidence) or after a cheap
+    # geometry probe (too few inliers / poor inlier coverage / implausible warp).
     def _should_fallback(self, primary_result, adaptation, image0_shape, image1_shape):
         print("[ProposedMatcher._should_fallback] Deciding whether to fallback...")
 
@@ -449,7 +665,10 @@ class ProposedMatcher:
             print("[ProposedMatcher._should_fallback] primary_result is None -> fallback=True")
             return True
 
-        effective_min_matches = int(adaptation.get("min_matches_before_fallback", self.min_matches))
+        effective_min_matches = int(
+            adaptation.get("min_matches_before_fallback", self.min_matches)
+        )
+
         quality = self._compute_match_quality(primary_result, image0_shape, image1_shape)
 
         num_matches = int(quality["num_matches"])
@@ -463,25 +682,58 @@ class ProposedMatcher:
         count_too_low = num_matches < effective_min_matches
         coverage_too_low = num_matches >= 4 and spatial_coverage < effective_min_spatial_coverage
         score_too_low = (
-                score_mean is not None
-                and num_matches >= 4
-                and score_mean < self.fallback_min_score_mean
+            score_mean is not None
+            and num_matches >= 4
+            and score_mean < self.fallback_min_score_mean
         )
+
+        probe = self._probe_primary_geometry(primary_result, image0_shape, image1_shape)
+
+        probe_failed = not bool(probe["success"])
+        too_few_probe_inliers = int(probe["num_inliers"]) < int(self.probe_min_inliers)
+        probe_ratio_too_low = float(probe["inlier_ratio"]) < float(self.probe_min_inlier_ratio)
+        probe_coverage_too_low = float(probe["inlier_coverage"]) < float(self.probe_min_inlier_coverage)
+        corners_bad = not bool(probe["corners_reasonable"])
 
         print(
             "[ProposedMatcher._should_fallback] "
             f"num_matches={num_matches}, effective_min_matches={effective_min_matches}, "
             f"spatial_coverage={spatial_coverage}, "
             f"effective_min_spatial_coverage={effective_min_spatial_coverage}, "
-            f"score_mean={score_mean}, fallback_min_score_mean={self.fallback_min_score_mean}, "
-            f"count_too_low={count_too_low}, coverage_too_low={coverage_too_low}, "
-            f"score_too_low={score_too_low}"
+            f"score_mean={score_mean}, fallback_min_score_mean={self.fallback_min_score_mean}"
+        )
+        print(
+            "[ProposedMatcher._should_fallback] "
+            f"probe={probe}, "
+            f"probe_min_inliers={self.probe_min_inliers}, "
+            f"probe_min_inlier_ratio={self.probe_min_inlier_ratio}, "
+            f"probe_min_inlier_coverage={self.probe_min_inlier_coverage}"
+        )
+        print(
+            "[ProposedMatcher._should_fallback] "
+            f"count_too_low={count_too_low}, "
+            f"coverage_too_low={coverage_too_low}, "
+            f"score_too_low={score_too_low}, "
+            f"probe_failed={probe_failed}, "
+            f"too_few_probe_inliers={too_few_probe_inliers}, "
+            f"probe_ratio_too_low={probe_ratio_too_low}, "
+            f"probe_coverage_too_low={probe_coverage_too_low}, "
+            f"corners_bad={corners_bad}"
         )
 
-        fallback = bool(count_too_low or coverage_too_low or score_too_low)
+        fallback = bool(
+            count_too_low
+            or coverage_too_low
+            or score_too_low
+            or probe_failed
+            or too_few_probe_inliers
+            or probe_ratio_too_low
+            or probe_coverage_too_low
+            or corners_bad
+        )
+
         print(f"[ProposedMatcher._should_fallback] fallback={fallback}")
         return fallback
-
     def _normalize_points(self, pts):
         if pts is None:
             return np.zeros((0, 2), dtype=np.float32)
