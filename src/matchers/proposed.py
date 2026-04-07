@@ -1,5 +1,6 @@
 import cv2 as cv
 import numpy as np
+import os
 
 
 class ProposedMatcher:
@@ -26,15 +27,25 @@ class ProposedMatcher:
         self.fallback_matcher = None
 
         self._parse_config()
+        self._assert_required_xfeat_weights_present()
 
         try:
             self.primary_matcher = self._build_matcher(self.primary_name)
+            print(f"[ProposedMatcher.__init__] Primary matcher built: {self.primary_name}")
         except Exception as exc:
             print(f"[ProposedMatcher.__init__] Primary matcher init failed: {exc}")
+
+            if self.primary_name == "xfeat":
+                raise RuntimeError(
+                    "[ProposedMatcher.__init__] Refusing to continue because primary matcher "
+                    "is XFeat and it failed to initialize."
+                ) from exc
+
             self.primary_matcher = None
 
         try:
             self.fallback_matcher = self._build_matcher(self.fallback_name) if self.fallback_enabled else None
+            print(f"[ProposedMatcher.__init__] Fallback matcher built: {self.fallback_name}")
         except Exception as exc:
             print(f"[ProposedMatcher.__init__] Fallback matcher init failed: {exc}")
             self.fallback_matcher = None
@@ -50,6 +61,20 @@ class ProposedMatcher:
         self.adaptive_thresholds = bool(self.proposed_cfg.get("adaptive_thresholds", True))
         self.min_matches = int(self.proposed_cfg.get("min_matches_before_fallback", 30))
 
+        # brightness/extras thresholds
+        self.brightness_low_threshold = float(self.proposed_cfg.get("brightness_low_threshold", 45.0))
+        self.brightness_high_threshold = float(self.proposed_cfg.get("brightness_high_threshold", 210.0))
+        self.dynamic_range_low_threshold = float(self.proposed_cfg.get("dynamic_range_low_threshold", 55.0))
+        self.jpeg_high_threshold = float(self.proposed_cfg.get("jpeg_high_threshold", 2.0))
+        self.noise_flat_grad_threshold = float(self.proposed_cfg.get("noise_flat_grad_threshold", 12.0))
+
+        self.fallback_min_spatial_coverage = float(
+            self.proposed_cfg.get("fallback_min_spatial_coverage", 0.015)
+        )
+        self.fallback_min_score_mean = float(
+            self.proposed_cfg.get("fallback_min_score_mean", 0.20)
+        )
+
         # Degradation thresholds (tunable through config)
         self.blur_low_threshold = float(self.proposed_cfg.get("blur_low_threshold", 60.0))
         self.noise_high_threshold = float(self.proposed_cfg.get("noise_high_threshold", 12.0))
@@ -64,6 +89,50 @@ class ProposedMatcher:
         print(f"[ProposedMatcher._parse_config] primary={self.primary_name}, fallback={self.fallback_name}")
         print(f"[ProposedMatcher._parse_config] fallback_enabled={self.fallback_enabled}")
         print(f"[ProposedMatcher._parse_config] min_matches={self.min_matches}")
+        print(
+            "[ProposedMatcher._parse_config] "
+            f"brightness_low_threshold={self.brightness_low_threshold}, "
+            f"brightness_high_threshold={self.brightness_high_threshold}, "
+            f"dynamic_range_low_threshold={self.dynamic_range_low_threshold}, "
+            f"jpeg_high_threshold={self.jpeg_high_threshold}, "
+            f"noise_flat_grad_threshold={self.noise_flat_grad_threshold}"
+        )
+        print(
+            "[ProposedMatcher._parse_config] "
+            f"fallback_min_spatial_coverage={self.fallback_min_spatial_coverage}, "
+            f"fallback_min_score_mean={self.fallback_min_score_mean}"
+        )
+
+
+
+    def _assert_required_xfeat_weights_present(self):
+        print("[ProposedMatcher._assert_required_xfeat_weights_present] Checking XFeat weight requirements...")
+
+        if self.primary_name != "xfeat":
+            print("[ProposedMatcher._assert_required_xfeat_weights_present] Primary is not XFeat. Skipping check.")
+            return
+
+        xfeat_cfg = dict(self.cfg.get("xfeat", {}))
+        weights_path = xfeat_cfg.get("weights_path", None)
+
+        print(
+            "[ProposedMatcher._assert_required_xfeat_weights_present] "
+            f"primary_name={self.primary_name}, weights_path={weights_path}"
+        )
+
+        if weights_path is None or str(weights_path).strip() in {"", "null", "None"}:
+            raise ValueError(
+                "[ProposedMatcher._assert_required_xfeat_weights_present] "
+                "Primary matcher is XFeat, but xfeat.weights_path is null/empty."
+            )
+
+        if not os.path.isfile(str(weights_path)):
+            raise FileNotFoundError(
+                "[ProposedMatcher._assert_required_xfeat_weights_present] "
+                f"Expected XFeat weights file does not exist: {weights_path}"
+            )
+
+        print("[ProposedMatcher._assert_required_xfeat_weights_present] XFeat weights check passed.")
 
     def _build_matcher(self, matcher_name):
         print(f"[ProposedMatcher._build_matcher] Building matcher={matcher_name}")
@@ -104,7 +173,18 @@ class ProposedMatcher:
 
         med = cv.medianBlur(gray, 3)
         residual = gray.astype(np.float32) - med.astype(np.float32)
-        noise_score = float(np.std(residual))
+
+        # Estimate noise primarily in flat regions so the gradient threshold
+        # actually influences the decision path. Fall back to the full-image
+        # residual when the image has too few flat pixels.
+        gx = cv.Sobel(gray, cv.CV_32F, 1, 0, ksize=3)
+        gy = cv.Sobel(gray, cv.CV_32F, 0, 1, ksize=3)
+        grad_mag = cv.magnitude(gx, gy)
+        flat_mask = grad_mag < float(self.noise_flat_grad_threshold)
+        if int(np.count_nonzero(flat_mask)) >= 64:
+            noise_score = float(np.std(residual[flat_mask]))
+        else:
+            noise_score = float(np.std(residual))
 
         contrast_score = float(np.std(gray))
         brightness_score = float(np.mean(gray))
@@ -169,33 +249,70 @@ class ProposedMatcher:
         print(f"[ProposedMatcher._adapt_matcher_settings] indicators={indicators}")
 
         adapted_min_matches = int(self.min_matches)
-        hard_degradation = False
-        very_hard_degradation = False
+        severity_points = 0
+        degradation_reasons = []
 
-        if indicators["blur_score"] < self.blur_low_threshold:
-            adapted_min_matches += 8
-            hard_degradation = True
-        if indicators["noise_score"] > self.noise_high_threshold:
-            adapted_min_matches += 8
-            hard_degradation = True
-        if indicators["contrast_score"] < self.contrast_low_threshold:
-            adapted_min_matches += 6
-            hard_degradation = True
-        if indicators["jpeg_score"] > 2.5:
-            adapted_min_matches += 4
-            hard_degradation = True
+        blur_bad = indicators["blur_score"] < self.blur_low_threshold
+        noise_bad = indicators["noise_score"] > self.noise_high_threshold
+        contrast_bad = indicators["contrast_score"] < self.contrast_low_threshold
+        jpeg_bad = indicators["jpeg_score"] > self.jpeg_high_threshold
+        dynamic_range_bad = indicators["dynamic_range_score"] < self.dynamic_range_low_threshold
+        brightness_bad = (
+                indicators["brightness_score"] < self.brightness_low_threshold
+                or indicators["brightness_score"] > self.brightness_high_threshold
+        )
 
-        # Strong combined degradation, use the loosest geometry and easiest fallback trigger.
-        if indicators["blur_score"] < 0.5 * self.blur_low_threshold and indicators["noise_score"] > 1.5 * self.noise_high_threshold:
-            very_hard_degradation = True
+        if blur_bad:
+            adapted_min_matches += 24
+            severity_points += 2
+            degradation_reasons.append("blur")
+
+        if noise_bad:
+            adapted_min_matches += 24
+            severity_points += 2
+            degradation_reasons.append("noise")
+
+        if contrast_bad:
+            adapted_min_matches += 12
+            severity_points += 1
+            degradation_reasons.append("contrast")
+
+        if jpeg_bad:
+            adapted_min_matches += 12
+            severity_points += 1
+            degradation_reasons.append("jpeg")
+
+        if dynamic_range_bad:
+            adapted_min_matches += 16
+            severity_points += 2
+            degradation_reasons.append("dynamic_range")
+
+        if brightness_bad:
+            adapted_min_matches += 8
+            severity_points += 1
+            degradation_reasons.append("brightness")
+
+        hard_degradation = severity_points >= 1
+
+        very_hard_degradation = (
+                severity_points >= 4
+                or (blur_bad and noise_bad)
+                or (dynamic_range_bad and contrast_bad)
+                or (jpeg_bad and contrast_bad)
+        )
 
         adapted_min_matches = min(adapted_min_matches, self.max_adaptive_min_matches)
 
-        return {
+        adaptation = {
             "min_matches_before_fallback": adapted_min_matches,
             "hard_degradation": hard_degradation,
             "very_hard_degradation": very_hard_degradation,
+            "severity_points": int(severity_points),
+            "degradation_reasons": list(degradation_reasons),
         }
+
+        print(f"[ProposedMatcher._adapt_matcher_settings] adaptation={adaptation}")
+        return adaptation
 
     def _suggest_geom_overrides(self, adaptation):
         print("[ProposedMatcher._suggest_geom_overrides] Suggesting geometry overrides...")
@@ -244,19 +361,126 @@ class ProposedMatcher:
             print(f"[ProposedMatcher._run_fallback] Fallback matcher failed: {exc}")
             return None
 
-    def _should_fallback(self, primary_result, adaptation):
+    def _compute_bbox_coverage(self, pts, image_shape):
+        print("[ProposedMatcher._compute_bbox_coverage] Computing match coverage...")
+
+        if image_shape is None or len(image_shape) < 2:
+            print("[ProposedMatcher._compute_bbox_coverage] Invalid image shape. Returning 0.0")
+            return 0.0
+
+        pts = self._normalize_points(pts)
+        h, w = int(image_shape[0]), int(image_shape[1])
+
+        if len(pts) < 4 or h <= 0 or w <= 0:
+            print(
+                "[ProposedMatcher._compute_bbox_coverage] "
+                f"len(pts)={len(pts)}, h={h}, w={w}. Returning 0.0"
+            )
+            return 0.0
+
+        x_min = float(np.min(pts[:, 0]))
+        x_max = float(np.max(pts[:, 0]))
+        y_min = float(np.min(pts[:, 1]))
+        y_max = float(np.max(pts[:, 1]))
+
+        bbox_w = max(x_max - x_min, 0.0)
+        bbox_h = max(y_max - y_min, 0.0)
+        bbox_area = bbox_w * bbox_h
+        image_area = float(h * w)
+
+        coverage = float(bbox_area / image_area) if image_area > 0 else 0.0
+        print(
+            "[ProposedMatcher._compute_bbox_coverage] "
+            f"bbox_area={bbox_area}, image_area={image_area}, coverage={coverage}"
+        )
+        return coverage
+
+    # fallback should not be based only on raw count
+    # this adds a simple geometric sanity signal:
+    # are matches spread over the image or all clustered in one tiny patch?
+    def _compute_match_quality(self, match_result, image0_shape, image1_shape):
+        print("[ProposedMatcher._compute_match_quality] Computing match quality...")
+
+        if match_result is None:
+            quality = {
+                "num_matches": 0,
+                "score_mean": None,
+                "coverage0": 0.0,
+                "coverage1": 0.0,
+                "spatial_coverage": 0.0,
+            }
+            print(f"[ProposedMatcher._compute_match_quality] quality={quality}")
+            return quality
+
+        pts0 = self._normalize_points(match_result.get("matched_points0"))
+        pts1 = self._normalize_points(match_result.get("matched_points1"))
+        n = int(min(len(pts0), len(pts1)))
+        pts0 = pts0[:n]
+        pts1 = pts1[:n]
+
+        coverage0 = self._compute_bbox_coverage(pts0, image0_shape)
+        coverage1 = self._compute_bbox_coverage(pts1, image1_shape)
+        spatial_coverage = float(min(coverage0, coverage1))
+
+        score_mean = None
+        scores = match_result.get("scores", None)
+        if scores is not None:
+            scores = np.asarray(scores, dtype=np.float32).reshape(-1)[:n]
+            if scores.size > 0:
+                score_mean = float(np.mean(scores))
+
+        quality = {
+            "num_matches": n,
+            "score_mean": score_mean,
+            "coverage0": coverage0,
+            "coverage1": coverage1,
+            "spatial_coverage": spatial_coverage,
+        }
+        print(f"[ProposedMatcher._compute_match_quality] quality={quality}")
+        return quality
+
+ #now fallback triggers on:
+
+ #too few matches, matches too spatially clustered, very low average confidence when scores exist
+    def _should_fallback(self, primary_result, adaptation, image0_shape, image1_shape):
         print("[ProposedMatcher._should_fallback] Deciding whether to fallback...")
+
         if primary_result is None:
+            print("[ProposedMatcher._should_fallback] primary_result is None -> fallback=True")
             return True
 
         effective_min_matches = int(adaptation.get("min_matches_before_fallback", self.min_matches))
-        num_matches = int(primary_result.get("num_matches", 0))
+        quality = self._compute_match_quality(primary_result, image0_shape, image1_shape)
+
+        num_matches = int(quality["num_matches"])
+        spatial_coverage = float(quality["spatial_coverage"])
+        score_mean = quality["score_mean"]
+
+        effective_min_spatial_coverage = float(self.fallback_min_spatial_coverage)
+        if adaptation.get("hard_degradation", False):
+            effective_min_spatial_coverage *= 0.75
+
+        count_too_low = num_matches < effective_min_matches
+        coverage_too_low = num_matches >= 4 and spatial_coverage < effective_min_spatial_coverage
+        score_too_low = (
+                score_mean is not None
+                and num_matches >= 4
+                and score_mean < self.fallback_min_score_mean
+        )
 
         print(
-            f"[ProposedMatcher._should_fallback] num_matches={num_matches}, "
-            f"effective_min_matches={effective_min_matches}"
+            "[ProposedMatcher._should_fallback] "
+            f"num_matches={num_matches}, effective_min_matches={effective_min_matches}, "
+            f"spatial_coverage={spatial_coverage}, "
+            f"effective_min_spatial_coverage={effective_min_spatial_coverage}, "
+            f"score_mean={score_mean}, fallback_min_score_mean={self.fallback_min_score_mean}, "
+            f"count_too_low={count_too_low}, coverage_too_low={coverage_too_low}, "
+            f"score_too_low={score_too_low}"
         )
-        return num_matches < effective_min_matches
+
+        fallback = bool(count_too_low or coverage_too_low or score_too_low)
+        print(f"[ProposedMatcher._should_fallback] fallback={fallback}")
+        return fallback
 
     def _normalize_points(self, pts):
         if pts is None:
@@ -328,7 +552,12 @@ class ProposedMatcher:
 
         primary_result = self._run_primary(image0, image1)
 
-        if self.fallback_enabled and self._should_fallback(primary_result, adaptation):
+        if self.fallback_enabled and self._should_fallback(
+                primary_result,
+                adaptation,
+                image0.shape,
+                image1.shape,
+        ):
             fallback_result = self._run_fallback(image0, image1)
             if fallback_result is not None:
                 return self._normalize_match_result(

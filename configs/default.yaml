@@ -31,11 +31,11 @@ method:
     scaleFactor: 1.2
     nlevels: 8
     fastThreshold: 20
-    ratio_test: 0.75
+    ratio_test: 0.80
 
   xfeat:
     device: "cpu"
-    top_k: 2000
+    top_k: 2048
     weights_path: null
     score_threshold: null
 
@@ -43,9 +43,29 @@ method:
     enabled: true
     adaptive_thresholds: true
     fallback_enabled: true
+
     primary_matcher: "xfeat"
     fallback_matcher: "orb"
-    min_matches_before_fallback: 30
+
+    min_matches_before_fallback: 20
+    max_adaptive_min_matches: 60
+
+    blur_low_threshold: 60.0
+    noise_high_threshold: 12.0
+    contrast_low_threshold: 25.0
+    jpeg_high_threshold: 2.0
+    noise_flat_grad_threshold: 12.0
+
+    brightness_low_threshold: 45.0
+    brightness_high_threshold: 245.0
+    dynamic_range_low_threshold: 55.0
+
+    fallback_min_spatial_coverage: 0.015
+    fallback_min_score_mean: 0.20
+
+    reproj_threshold_nominal: 3.0
+    reproj_threshold_hard: 4.0
+    reproj_threshold_very_hard: 5.0
 
 geom:
   reproj_threshold: 3.0

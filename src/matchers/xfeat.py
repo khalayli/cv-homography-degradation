@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from typing import Any, Dict, Optional, Tuple
-
+import os
 import cv2
 import numpy as np
 
@@ -53,6 +53,7 @@ class XFeatMatcher:
         self._torch = None
         self._model = None
         self._backend_name = "xfeat"
+        self._assert_required_weights_present()
 
         self._check_dependencies()
         self._model = self._load_model()
@@ -75,6 +76,24 @@ class XFeatMatcher:
 
         print("[XFeatMatcher._check_dependencies] torch import OK")
 
+    def _assert_required_weights_present(self) -> None:
+        print("[XFeatMatcher._assert_required_weights_present] Checking configured weights...")
+
+        print(f"[XFeatMatcher._assert_required_weights_present] weights_path={self.weights_path}")
+
+        if self.weights_path is None or str(self.weights_path).strip() in {"", "null", "None"}:
+            raise ValueError(
+                "[XFeatMatcher._assert_required_weights_present] "
+                "xfeat.weights_path is null/empty. Refusing to initialize XFeat without pretrained weights."
+            )
+
+        if not os.path.isfile(str(self.weights_path)):
+            raise FileNotFoundError(
+                "[XFeatMatcher._assert_required_weights_present] "
+                f"Expected XFeat weights file does not exist: {self.weights_path}"
+            )
+
+        print("[XFeatMatcher._assert_required_weights_present] Weight check passed.")
     def _load_model(self):
         print("[XFeatMatcher._load_model] Loading XFeat model...")
 
@@ -108,46 +127,100 @@ class XFeatMatcher:
 
     def _instantiate_model(self, model_cls):
         print("[XFeatMatcher._instantiate_model] Instantiating model...")
+        print(f"[XFeatMatcher._instantiate_model] model_cls={model_cls}")
+        print(f"[XFeatMatcher._instantiate_model] weights_path={self.weights_path}")
+        print(f"[XFeatMatcher._instantiate_model] top_k={self.top_k}")
+        print(f"[XFeatMatcher._instantiate_model] device={self.device}")
 
-        # Different repos use different constructor signatures.
-        # Try a few common patterns.
+        if self.weights_path is None or str(self.weights_path).strip() in {"", "null", "None"}:
+            raise ValueError(
+                "[XFeatMatcher._instantiate_model] "
+                "weights_path is null/empty. Refusing permissive constructor fallback."
+            )
+
         constructor_attempts = [
-            lambda: model_cls(),
-            lambda: model_cls(top_k=self.top_k),
-            lambda: model_cls(weights=self.weights_path) if self.weights_path else model_cls(),
-            lambda: model_cls(weights_path=self.weights_path) if self.weights_path else model_cls(),
+            (
+                "weights+top_k",
+                lambda: model_cls(weights=self.weights_path, top_k=self.top_k),
+            ),
+            (
+                "weights_path+top_k",
+                lambda: model_cls(weights_path=self.weights_path, top_k=self.top_k),
+            ),
+            (
+                "weights_only",
+                lambda: model_cls(weights=self.weights_path),
+            ),
+            (
+                "weights_path_only",
+                lambda: model_cls(weights_path=self.weights_path),
+            ),
         ]
 
         last_error = None
         model = None
+        used_attempt_name = None
 
-        for attempt_idx, attempt in enumerate(constructor_attempts):
+        for attempt_idx, (attempt_name, attempt_fn) in enumerate(constructor_attempts):
             try:
-                print(f"[XFeatMatcher._instantiate_model] constructor attempt {attempt_idx}")
-                model = attempt()
+                print(
+                    "[XFeatMatcher._instantiate_model] "
+                    f"constructor attempt {attempt_idx}: {attempt_name}"
+                )
+                model = attempt_fn()
+                used_attempt_name = attempt_name
+                print(
+                    "[XFeatMatcher._instantiate_model] "
+                    f"constructor succeeded with {attempt_name}"
+                )
                 break
             except Exception as exc:
-                print(f"[XFeatMatcher._instantiate_model] constructor attempt {attempt_idx} failed: {exc}")
+                print(
+                    "[XFeatMatcher._instantiate_model] "
+                    f"constructor attempt {attempt_idx} ({attempt_name}) failed: {exc}"
+                )
                 last_error = exc
 
         if model is None:
-            raise RuntimeError("Failed to instantiate XFeat model.") from last_error
+            raise RuntimeError(
+                "[XFeatMatcher._instantiate_model] Failed to instantiate XFeat model "
+                "with an explicit weights path."
+            ) from last_error
 
-        # Optional common torch model setup.
+        if hasattr(model, "top_k"):
+            try:
+                model.top_k = self.top_k
+                print(f"[XFeatMatcher._instantiate_model] Set model.top_k={self.top_k}")
+            except Exception as exc:
+                print(
+                    "[XFeatMatcher._instantiate_model] "
+                    f"warning: could not set model.top_k: {exc}"
+                )
+
         if hasattr(model, "to"):
             try:
                 model = model.to(self.device)
                 print(f"[XFeatMatcher._instantiate_model] moved model to {self.device}")
             except Exception as exc:
-                print(f"[XFeatMatcher._instantiate_model] warning: could not move model to device: {exc}")
+                print(
+                    "[XFeatMatcher._instantiate_model] "
+                    f"warning: could not move model to device: {exc}"
+                )
 
         if hasattr(model, "eval"):
             try:
                 model.eval()
                 print("[XFeatMatcher._instantiate_model] model.eval() done")
             except Exception as exc:
-                print(f"[XFeatMatcher._instantiate_model] warning: model.eval() failed: {exc}")
+                print(
+                    "[XFeatMatcher._instantiate_model] "
+                    f"warning: model.eval() failed: {exc}"
+                )
 
+        print(
+            "[XFeatMatcher._instantiate_model] "
+            f"Finished model init using constructor={used_attempt_name}"
+        )
         return model
 
     def _preprocess_image(self, image: np.ndarray) -> np.ndarray:
