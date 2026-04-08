@@ -71,9 +71,9 @@ method:
     probe_confidence: 0.995
     probe_max_iters: 2000
 
-    probe_min_inliers: 40
-    probe_min_inlier_ratio: 0.50
-    probe_min_inlier_coverage: 0.04
+    probe_min_inliers: 30
+    probe_min_inlier_ratio: 0.40
+    probe_min_inlier_coverage: 0.03
 
     probe_min_area_ratio: 0.20
     probe_max_area_ratio: 4.00
