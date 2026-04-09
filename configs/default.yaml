@@ -44,12 +44,11 @@ method:
     adaptive_thresholds: true
     fallback_enabled: true
 
-    primary_matcher: "xfeat"
-    fallback_matcher: "orb"
+    # Switch these two lines only:
+    primary_matcher: "orb"
+    fallback_matcher: "xfeat"
 
-    min_matches_before_fallback: 20
-    max_adaptive_min_matches: 60
-
+    # Shared degradation thresholds
     blur_low_threshold: 60.0
     noise_high_threshold: 12.0
     contrast_low_threshold: 25.0
@@ -60,25 +59,56 @@ method:
     brightness_high_threshold: 245.0
     dynamic_range_low_threshold: 55.0
 
-    fallback_min_spatial_coverage: 0.015
-    fallback_min_score_mean: 0.20
-
+    # Shared geometry override thresholds
     reproj_threshold_nominal: 3.0
     reproj_threshold_hard: 4.0
     reproj_threshold_very_hard: 5.0
 
+    # Shared cheap probe settings
     probe_reproj_threshold: 3.0
     probe_confidence: 0.995
     probe_max_iters: 2000
-
-    probe_min_inliers: 30
-    probe_min_inlier_ratio: 0.40
-    probe_min_inlier_coverage: 0.03
-
     probe_min_area_ratio: 0.20
     probe_max_area_ratio: 4.00
     probe_margin_ratio: 0.25
 
+    # Direction-aware fallback policy
+    direction_profiles:
+      xfeat_to_orb:
+        min_matches_before_fallback: 20
+        max_adaptive_min_matches: 60
+
+        min_matches_add_blur: 24
+        min_matches_add_noise: 24
+        min_matches_add_contrast: 12
+        min_matches_add_jpeg: 12
+        min_matches_add_dynamic_range: 16
+        min_matches_add_brightness: 8
+
+        fallback_min_spatial_coverage: 0.015
+        fallback_min_score_mean: 0.20
+
+        probe_min_inliers: 30
+        probe_min_inlier_ratio: 0.40
+        probe_min_inlier_coverage: 0.03
+
+      orb_to_xfeat:
+        min_matches_before_fallback: 42
+        max_adaptive_min_matches: 96
+
+        min_matches_add_blur: 28
+        min_matches_add_noise: 28
+        min_matches_add_contrast: 16
+        min_matches_add_jpeg: 12
+        min_matches_add_dynamic_range: 20
+        min_matches_add_brightness: 10
+
+        fallback_min_spatial_coverage: 0.020
+        fallback_min_score_mean: null
+
+        probe_min_inliers: 18
+        probe_min_inlier_ratio: 0.35
+        probe_min_inlier_coverage: 0.02
 geom:
   reproj_threshold: 3.0
   confidence: 0.999
