@@ -5,8 +5,6 @@ Degradation-aware lightweight matching for robust homography estimation on HPatc
 ## What this repo is for
 This project compares classical and lightweight image matching pipelines under degradations such as blur, noise, JPEG compression, brightness shifts, and contrast changes. The goal is planar homography estimation with robust fitting.
 
-The codebase is intentionally modular so different teammates can work on data loading, matchers, geometry, and analysis in parallel.
-
 ## Current scope
 - Dataset: HPatches full image sequences with ground-truth homographies
 - Baseline: ORB first
@@ -14,48 +12,9 @@ The codebase is intentionally modular so different teammates can work on data lo
 - Robust fitting: RANSAC ( MAGSAC++ is better but time doesn't allow)
 - Evaluation: corner transfer error, thresholded success, runtime
 
-## Repo layout
-```text
-cv-homography-degradation/
-  configs/
-    default.yaml
-  notebooks/
-    main_colab.ipynb
-  scripts/
-    run_experiment.py
-    summarize_results.py
-  src/
-    data/
-      hpatches.py
-      corruptions.py
-    matchers/
-      orb.py
-      xfeat.py
-      jamma.py
-      roma.py
-      proposed.py
-    geom/
-      homography.py
-      metrics.py
-    utils/
-      io.py
-      timing.py
-      seeding.py
-  results/
-  reports/figures/
-```
-
-## What is already supported
-- Corruption helpers
-- Metric helpers
-- Experiment runner 
-- Summary script for CSV outputs
-
 ## What is left as TODO
-- XFeat integration details (optional)
 - JamMa integration details  (optional)
 - RoMa integration details  (optional)
-- Proposed degradation-aware fallback logic
 
 ## Example run
 Use the notebook provided.
